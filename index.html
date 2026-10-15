@@ -50,8 +50,8 @@
 <script>
 'use strict';
 const EMBEDDED_CSV_BASE64 = '';
-const KEY='bilancio-wallet-locale-v1';
-const CATS=[{id:'Svago',color:'#61739d'},{id:'Bollette',color:'#548fba'},{id:'Carburante',color:'#b07c47'},{id:'Assicurazione e bollo auto',color:'#937cb8'},{id:'Abbonamenti',color:'#4e9b87'},{id:'Mutuo',color:'#c37379'},{id:'Spesa',color:'#8fae60'}];
+const KEY='bilancio-wallet-locale-v1'; // Keep previous data, even after app upgrades.
+const CATS=[{id:'Svago',color:'#61739d'},{id:'Bollette',color:'#548fba'},{id:'Carburante',color:'#b07c47'},{id:'Assicurazione e bollo auto',color:'#937cb8'},{id:'Abbonamenti',color:'#4e9b87'},{id:'Mutuo',color:'#c37379'},{id:'Spesa',color:'#8fae60'},{id:'Spese mediche',color:'#a47b94'}];
 const EXCLUDED='__IGNORA__';
 const MONTHS=['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
 const money=n=>new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(n||0);
@@ -79,26 +79,35 @@ function classification(r){
  const ignored=reason=>({state:'ignored',cat:null,reason,manual:false});
  const review=(reason,suggest=null)=>({state:'review',cat:null,reason,suggest,manual:false});
  const isInvestment=c.includes('investiment')||c.includes('risparmi')||label.includes('investiment');
- if((c==='cibo e bevande'||label==='spesa')&&!isInvestment)return counted('Spesa');
  if(r.transfer||c.includes('trasferisci')||c.includes('trasferiment')||c.includes('preleva'))return ignored('Trasferimento / prelievo');
  if(isInvestment)return ignored('Investimento / risparmio');
+ // Confirmed 15 March 2026 entry: Camilla €100 is an investment, not fuel.
+ if(r.date==='2026-03-15'&&r.account==='storico'&&r.amount===100&&/\bcamilla\b/.test(note))return ignored('Investimento per Camilla (confermato)');
  if(/revolut\*\*|revolut\*|apple pay top-up|prelievo mastercard|^to eur\b|to eur mb:/.test(note))return ignored('Ricarica / giroconto Revolut');
- if(/revpoints spare change/.test(note))return review('Arrotondamento o punti Revolut, verificare che non sia una spesa',EXCLUDED);
+ if(/revpoints spare change/.test(note))return counted('Svago'); // Confermato: €1,61 su tre operazioni.
  // Reimbursements recorded in the secondary account are counted in the same category as expenses.
  // Fibra is always Abbonamenti, including the credits imported by Wallet as Bollette.
  if(/\bfibra\b|\binternet\b|\bwind tre\b/.test(note))return counted('Abbonamenti');
  if(/\btari\b/.test(note))return counted('Bollette');
+ // From 2027, medical expenses/reimbursements have their own category, including Wallet's new label.
+ // Older medical transactions remain in Svago.
+ const isMedical=/(?:spese mediche|medic[aoei]|salute|farmacia|dentist[ai]|odontoiatr|metasalute)/.test(c+' '+label)||/\b(?:farmacia|dentista|odontoiatr\w*|metasalute)\b/.test(note);
+ if(Number(r.date.slice(0,4))>=2027&&isMedical)return counted('Spese mediche');
+ // The 2026 Intesa Sanpaolo Protezione and Metasalute reimbursements belong to Svago.
+ if(income&&r.date.startsWith('2026-')&&/intesa sanpaolo protezione|\bmetasalute\b/.test(note))return counted('Svago');
+ // 22 Aug 2026: undetailed Arnaldo refund, explicitly confirmed as Svago.
+ if(income&&r.date==='2026-08-22'&&r.account==='Arnaldo'&&r.amount===36&&!String(r.note||'').trim())return counted('Svago');
+ // Wallet food/grocery reimbursements remain in Spesa, including intentional spending money.
+ if(c==='cibo e bevande'||label==='spesa')return counted('Spesa');
  // DAZN has no Svago label on its positive reimbursement: pair it with the outgoing
  // Wallet item which DOES have the label Svago. Kindle remains in Wallet's Svago label.
  if(income&&/\bdazn\b/.test(note))return counted('Svago');
- if(income&&/\bmetasalute\b/.test(note))return counted('Svago');
  // Exclude unrelated income, while flagging unspecified refunds as needing a decision.
  if(income&&(c.includes('stipendio')||c==='vendita'))return ignored('Entrata non collegata alle spese');
- if(income&&(c.includes('rimborsi')||c==='reddito'))return review('Entrata: è un rimborso di una delle 7 categorie?', 'Svago');
+ if(income&&(c.includes('rimborsi')||c==='reddito'))return review('Entrata: a quale categoria appartiene il rimborso?', 'Svago');
  if(income&&c==='shopping'&&!label&&!note.trim())return review('Rimborso senza descrizione: scegliere la spesa compensata', 'Svago');
  if(c.includes('assicurazione veicolo')||c==='bollo')return counted('Assicurazione e bollo auto');
  if(c.includes('carburante')){
-  if(/\bcamilla\b/.test(note))return review('Categoria carburante ma descrizione Camilla: controllare','Carburante');
   return counted('Carburante');
  }
  if(c==='abitazione'||label.includes('mutuo'))return /mutuo|casa/i.test(note+' '+label)?counted('Mutuo'):review('Abitazione: non è chiaro se sia mutuo','Mutuo');
@@ -108,23 +117,22 @@ function classification(r){
  }
  // Respect Wallet's explicit category/label on DAZN, Kindle and other subscriptions.
  if(c==='abbonamenti'||label==='abbonamenti'){
-  if(/costo di rinnovo carta|costo spedizione ordinaria carta/.test(note))return review('Costo bancario, non necessariamente abbonamento','Abbonamenti');
+  if(/costo di rinnovo carta|costo spedizione ordinaria carta/.test(note))return counted('Svago'); // Confermato: costi carta 3,50 € e 2,50 €
   return counted('Abbonamenti');
  }
  // Money intentionally sent for groceries counts as Spesa, as requested.
  if(c==='cibo e bevande'||label==='spesa')return counted('Spesa');
- // Svago is also the destination for shopping, electronics, medical bills,
- // language courses, union fees and personal payments
- // when categorized as Vita e intrattenimento.
+ // Through 2026, medical bills join Svago; from 2027 they join Spese mediche.
+ // Shopping, electronics, courses, union fees and personal payments join Svago.
  if(c==='vita e intrattenimento')return counted('Svago');
  if(c==='shopping'||c.includes('elettronica')){
-  if(/\bbenzina\b|\bcarburante\b|\beni self\b/.test(note))return review('Shopping che sembra carburante','Carburante');
-  if(/lidl|eurospin|\baldi\b|\bcrai\b|\bemisfero\b/.test(note))return review('Shopping che sembra spesa alimentare','Spesa');
+  if(/\bbenzina\b|\bcarburante\b|\beni self\b/.test(note))return counted('Carburante'); // Confermato: benzina etichettata Shopping
+  if(/lidl|eurospin|\baldi\b|\bcrai\b|\bemisfero\b/.test(note))return counted('Spesa'); // Confermato: Lidl e altre spese alimentari riconoscibili
   return counted('Svago');
  }
  if(label.includes('svago'))return counted('Svago');
  if(income)return ignored('Entrata non legata alle spese');
- return review('Categoria Wallet fuori dalle 7 categorie');
+ return review('Categoria Wallet fuori dalle categorie previste');
 }
 function live(r){return classification(r)}
 function statusRows(rows=db.rows){return rows.map(r=>({...r,_c:live(r)}));}
@@ -132,16 +140,16 @@ function currentYears(){return [...new Set(db.rows.map(x=>x.date.slice(0,4)))].s
 function displayDate(s){let [y,m,d]=s.split('-');return `${d}/${m}/${y}`;}
 function summary(rows){let res={total:0,cat:{},counts:0,byMonth:Array(12).fill(0),excluded:0,review:0};CATS.forEach(c=>res.cat[c.id]=0);for(const r of rows){const c=live(r);if(c.state==='review'){res.review++;continue;}if(c.state==='ignored'){res.excluded++;continue;}if(!res.cat.hasOwnProperty(c.cat))continue;const signed=norm(r.type).includes('entrata')?-r.amount:r.amount;res.cat[c.cat]+=signed;res.total+=signed;res.counts++;res.byMonth[Number(r.date.slice(5,7))-1]+=signed;}return res;}
 function render(){const yrs=currentYears();if(!yrs.includes(year))year=yrs[0]||String(new Date().getFullYear());$('#yearPicker').innerHTML=(yrs.length?yrs:[year]).map(y=>`<option value="${y}" ${y===year?'selected':''}>${y}</option>`).join('');$('#monthPicker').innerHTML=`<option value="all">Tutto l'anno</option>`+MONTHS.map((n,i)=>`<option value="${i+1}" ${String(i+1)===String(month)?'selected':''}>${n}</option>`).join('');$('#yearPicker').value=year;$('#monthPicker').value=month;renderDashboard();renderReview();renderMovements();renderSettings();renderWarning();document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el.dataset.tab===activeTab));document.querySelectorAll('.view').forEach(el=>el.classList.toggle('active',el.id==='view-'+activeTab));}
-function renderDashboard(){const yearRows=db.rows.filter(r=>r.date.slice(0,4)===year);const periodRows=yearRows.filter(r=>month==='all'||Number(r.date.slice(5,7))===Number(month));const s=summary(periodRows),annual=summary(yearRows);$('#periodCaption').textContent=month==='all'?`Anno ${year} · Dati registrati in ${[...new Set(yearRows.map(r=>r.date.slice(5,7)))].length} mesi`:`${MONTHS[Number(month)-1]} ${year} · Spese classificate`;
+function renderDashboard(){const visibleCats=CATS.filter(c=>c.id!=='Spese mediche'||Number(year)>=2027);const yearRows=db.rows.filter(r=>r.date.slice(0,4)===year);const periodRows=yearRows.filter(r=>month==='all'||Number(r.date.slice(5,7))===Number(month));const s=summary(periodRows),annual=summary(yearRows);$('#periodCaption').textContent=month==='all'?`Anno ${year} · Dati registrati in ${[...new Set(yearRows.map(r=>r.date.slice(5,7)))].length} mesi`:`${MONTHS[Number(month)-1]} ${year} · Spese classificate`;
  $('#heroTitle').textContent=month==='all'?'Spese nette nell’anno':'Spese nette nel mese';$('#heroAmount').textContent=money(s.total);const activeMonths=month==='all'?[...new Set(yearRows.map(r=>r.date.slice(5,7)))].length:1;$('#heroAvg').textContent=money(activeMonths?s.total/activeMonths:0);$('#heroCount').textContent=s.counts;$('#heroDate').textContent=yearRows.length?displayDate([...yearRows].sort((a,b)=>a.date.localeCompare(b.date)).at(-1).date):'—';
  let max=Math.max(1,...annual.byMonth);$('#monthChart').innerHTML=`<div class="bar-chart">${annual.byMonth.map((v,i)=>`<button class="bar-item ${Number(month)===i+1?'selected':''}" data-month="${i+1}" title="${MONTHS[i]}: ${money(v)}" aria-label="Seleziona ${MONTHS[i]}, ${money(v)}"><span class="bar-amt">${v?moneyShort(v).replace(' €',''):''}</span><span class="bar" style="--h:${Math.max(v>0?3:1,Math.max(0,v)/max*128)}px"></span><span class="mon">${MONTHS[i].slice(0,3)}</span></button>`).join('')}</div><div class="chart-note">Spesa al netto dei rimborsi della stessa categoria; trasferimenti esclusi.</div>`;
- $('#catSub').textContent=`${s.counts} movimenti, inclusi i rimborsi`;$('#categoryRows').innerHTML=CATS.map(c=>{let v=s.cat[c.id],percent=s.total?100*v/s.total:0,barPct=Math.min(100,Math.max(0,percent));return `<button class="cat-row" data-cat="${escapeHTML(c.id)}"><span class="cat-dot" style="background:${c.color}"></span><div class="cat-info"><div class="cat-name">${escapeHTML(c.id)}</div><div class="cat-track"><div class="cat-fill" style="--color:${c.color};--width:${barPct}%"></div></div></div><div class="cat-right"><strong>${money(v)}</strong><span>${percent.toFixed(1).replace('.',',')}%</span></div></button>`}).join('');
- const fmt=v=>v?moneyShort(v):'—';$('#annualMatrix').innerHTML=`<table class="matrix"><thead><tr><th>Categoria</th>${MONTHS.map((n,i)=>`<th class="${String(i+1)===String(month)?'highlight':''}">${n.slice(0,3)}</th>`).join('')}<th>Totale</th></tr></thead><tbody>${CATS.map(c=>{const vals=Array(12).fill(0);for(const r of yearRows){if(live(r).cat===c.id&&live(r).state==='counted')vals[Number(r.date.slice(5,7))-1]+=norm(r.type).includes('entrata')?-r.amount:r.amount}return `<tr><td>${escapeHTML(c.id)}</td>${vals.map((v,i)=>`<td class="${String(i+1)===String(month)?'highlight':''}">${fmt(v)}</td>`).join('')}<td><b>${money(annual.cat[c.id])}</b></td></tr>`}).join('')}</tbody><tfoot><tr><td>Totale</td>${annual.byMonth.map((v,i)=>`<td class="${String(i+1)===String(month)?'highlight':''}">${fmt(v)}</td>`).join('')}<td>${money(annual.total)}</td></tr></tfoot></table>`;}
+ $('#catSub').textContent=`${s.counts} movimenti, inclusi i rimborsi`;$('#categoryRows').innerHTML=visibleCats.map(c=>{let v=s.cat[c.id],percent=s.total?100*v/s.total:0,barPct=Math.min(100,Math.max(0,percent));return `<button class="cat-row" data-cat="${escapeHTML(c.id)}"><span class="cat-dot" style="background:${c.color}"></span><div class="cat-info"><div class="cat-name">${escapeHTML(c.id)}</div><div class="cat-track"><div class="cat-fill" style="--color:${c.color};--width:${barPct}%"></div></div></div><div class="cat-right"><strong>${money(v)}</strong><span>${percent.toFixed(1).replace('.',',')}%</span></div></button>`}).join('');
+ const fmt=v=>v?moneyShort(v):'—';$('#annualMatrix').innerHTML=`<table class="matrix"><thead><tr><th>Categoria</th>${MONTHS.map((n,i)=>`<th class="${String(i+1)===String(month)?'highlight':''}">${n.slice(0,3)}</th>`).join('')}<th>Totale</th></tr></thead><tbody>${visibleCats.map(c=>{const vals=Array(12).fill(0);for(const r of yearRows){if(live(r).cat===c.id&&live(r).state==='counted')vals[Number(r.date.slice(5,7))-1]+=norm(r.type).includes('entrata')?-r.amount:r.amount}return `<tr><td>${escapeHTML(c.id)}</td>${vals.map((v,i)=>`<td class="${String(i+1)===String(month)?'highlight':''}">${fmt(v)}</td>`).join('')}<td><b>${money(annual.cat[c.id])}</b></td></tr>`}).join('')}</tbody><tfoot><tr><td>Totale</td>${annual.byMonth.map((v,i)=>`<td class="${String(i+1)===String(month)?'highlight':''}">${fmt(v)}</td>`).join('')}<td>${money(annual.total)}</td></tr></tfoot></table>`;}
 function renderReview(){const rows=db.rows.filter(r=>live(r).state==='review').sort((a,b)=>b.date.localeCompare(a.date));const amt=rows.reduce((n,r)=>n+r.amount,0);$('#reviewStats').innerHTML=`<div class="stat"><span>Da verificare</span><b>${rows.length}</b></div><div class="stat"><span>Valore sospeso</span><b>${moneyShort(amt)}</b></div><div class="stat"><span>Trasferimenti esclusi</span><b>${db.rows.filter(r=>r.transfer).length}</b></div>`;
  const yrs=currentYears();let rv=$('#reviewYear').value||'all';$('#reviewYear').innerHTML=`<option value="all">Tutti gli anni</option>`+yrs.map(y=>`<option value="${y}">${y}</option>`).join('');$('#reviewYear').value=yrs.includes(rv)?rv:'all';if($('#reviewYear').value==='all')rv='all';else rv=$('#reviewYear').value;
  const visible=rows.filter(r=>rv==='all'||r.date.startsWith(rv));$('#reviewList').innerHTML=visible.length?visible.slice(0,reviewLimit).map(r=>reviewCard(r)).join('')+(visible.length>reviewLimit?`<div style="text-align:center"><button class="btn small" data-more-review="1">Mostra gli altri ${visible.length-reviewLimit}</button></div>`:''):'<div class="empty">Nessun movimento da verificare. Tutte le spese disponibili sono classificate.</div>';$('#navReviewCount').textContent=rows.length?`(${rows.length})`:'';}
-function choices(value=''){return `<option value="" ${!value?'selected':''}>Seleziona una categoria…</option>`+CATS.map(c=>`<option value="${escapeHTML(c.id)}" ${value===c.id?'selected':''}>${escapeHTML(c.id)}</option>`).join('')+`<option value="${EXCLUDED}" ${value===EXCLUDED?'selected':''}>Non conteggiare</option>`;}
-function reviewCard(r,inModal=false){const c=live(r),selectId='choose-'+(inModal?'imp-':'db-')+escapeHTML(r.id);return `<article class="review-item"><div class="review-item-head"><div class="review-item-meta">${displayDate(r.date)} · ${escapeHTML(r.account)} · ${escapeHTML(r.category)} ${r.labels?'· '+escapeHTML(r.labels):''}</div><strong class="amount">${money(r.amount)}</strong></div><div class="review-item-title">${escapeHTML(r.note||r.payee||'(Nessuna descrizione)')}</div><div class="review-reason">${escapeHTML(c.reason)}</div><div class="review-choice"><select class="control" id="${selectId}" aria-label="Classifica movimento" data-default="${escapeHTML(c.suggest||'')}">${choices(c.suggest||'')}</select><button class="btn primary small" data-resolve="${escapeHTML(r.id)}" data-context="${inModal?'import':'db'}">Conferma</button></div></article>`;}
+function choices(value='',date=''){const selectableCats=CATS.filter(c=>c.id!=='Spese mediche'||!date||Number(date.slice(0,4))>=2027||value===c.id);return `<option value="" ${!value?'selected':''}>Seleziona una categoria…</option>`+selectableCats.map(c=>`<option value="${escapeHTML(c.id)}" ${value===c.id?'selected':''}>${escapeHTML(c.id)}</option>`).join('')+`<option value="${EXCLUDED}" ${value===EXCLUDED?'selected':''}>Non conteggiare</option>`;}
+function reviewCard(r,inModal=false){const c=live(r),selectId='choose-'+(inModal?'imp-':'db-')+escapeHTML(r.id);return `<article class="review-item"><div class="review-item-head"><div class="review-item-meta">${displayDate(r.date)} · ${escapeHTML(r.account)} · ${escapeHTML(r.category)} ${r.labels?'· '+escapeHTML(r.labels):''}</div><strong class="amount">${money(r.amount)}</strong></div><div class="review-item-title">${escapeHTML(r.note||r.payee||'(Nessuna descrizione)')}</div><div class="review-reason">${escapeHTML(c.reason)}</div><div class="review-choice"><select class="control" id="${selectId}" aria-label="Classifica movimento" data-default="${escapeHTML(c.suggest||'')}">${choices(c.suggest||'',r.date)}</select><button class="btn primary small" data-resolve="${escapeHTML(r.id)}" data-context="${inModal?'import':'db'}">Conferma</button></div></article>`;}
 function renderMovements(){const qry=norm($('#searchInput').value);let rows=[...db.rows].sort((a,b)=>b.date.localeCompare(a.date));rows=rows.filter(r=>{const c=live(r);if($('#movementStatus').value!=='all'&&c.state!==($('#movementStatus').value==='ignored'?'ignored':$('#movementStatus').value))return false;if(movementFilter!=='all'&&c.cat!==movementFilter)return false;return !qry||norm([r.date,r.note,r.payee,r.category,r.labels,r.account,r.amount].join(' ')).includes(qry)});
  $('#movementFilter').innerHTML=`<option value="all">Tutte le categorie</option>`+CATS.map(c=>`<option value="${escapeHTML(c.id)}">${escapeHTML(c.id)}</option>`).join('');$('#movementFilter').value=movementFilter;
  $('#movementTitle').textContent=movementFilter==='all'?'Tutti i movimenti':movementFilter;$('#movementCount').textContent=`${rows.length} movimenti`;
@@ -151,7 +159,7 @@ function renderWarning(){if(!db.rows.length){$('#warningBox').innerHTML='<div cl
 function setTab(t){activeTab=t;render();window.scrollTo({top:0,behavior:'auto'});}
 function storeManual(id,value,rows=db.rows){const r=rows.find(x=>x.id===id);if(!r)return false;if(!value){delete r.manual;}else{r.manual=value;}return true;}
 function resolve(id,context){const selector='#choose-'+(context==='import'?'imp-':'db-')+CSS.escape(id);const el=document.querySelector(selector);const val=el?.value;if(!val){alert('Scegli una categoria oppure «Non conteggiare».');return;}const target=context==='import'?pendingImport?.rows:db.rows;if(!target)return;storeManual(id,val,target);if(context==='import')renderImportDialog();else{save();render();}}
-function editRow(id){const r=db.rows.find(x=>x.id===id);if(!r)return;const c=live(r);const html=`<div class="overlay" id="editOverlay"><div class="dialog" style="max-width:490px"><div class="dialog-header"><div class="dialog-headline"><h2>Modifica categoria</h2><button class="close" data-close="1">✕</button></div></div><div class="dialog-body"><div class="review-item-meta">${displayDate(r.date)} · ${escapeHTML(r.account)}</div><p style="margin:10px 0 5px;font-weight:680">${money(r.amount)}</p><p style="font-size:13px;overflow-wrap:anywhere;margin:0 0 15px">${escapeHTML(r.note||r.payee||r.category)}</p><label for="editSelect" class="tiny">Categoria per i tuoi conteggi</label><select class="control" id="editSelect" style="width:100%;margin-top:6px">${choices(r.manual??(c.cat||EXCLUDED))}</select><p class="hint" style="margin-top:9px">Puoi anche scegliere «Non conteggiare». I rimborsi assegnati a una categoria riducono le spese; i trasferimenti vengono esclusi in automatico.</p></div><div class="dialog-footer"><button class="btn" data-close="1">Annulla</button><button class="btn primary" id="applyEdit" data-id="${escapeHTML(id)}">Salva</button></div></div></div>`;$('#modalRoot').innerHTML=html;}
+function editRow(id){const r=db.rows.find(x=>x.id===id);if(!r)return;const c=live(r);const html=`<div class="overlay" id="editOverlay"><div class="dialog" style="max-width:490px"><div class="dialog-header"><div class="dialog-headline"><h2>Modifica categoria</h2><button class="close" data-close="1">✕</button></div></div><div class="dialog-body"><div class="review-item-meta">${displayDate(r.date)} · ${escapeHTML(r.account)}</div><p style="margin:10px 0 5px;font-weight:680">${money(r.amount)}</p><p style="font-size:13px;overflow-wrap:anywhere;margin:0 0 15px">${escapeHTML(r.note||r.payee||r.category)}</p><label for="editSelect" class="tiny">Categoria per i tuoi conteggi</label><select class="control" id="editSelect" style="width:100%;margin-top:6px">${choices(r.manual??(c.cat||EXCLUDED),r.date)}</select><p class="hint" style="margin-top:9px">Puoi anche scegliere «Non conteggiare». I rimborsi assegnati a una categoria riducono le spese; i trasferimenti vengono esclusi in automatico.</p></div><div class="dialog-footer"><button class="btn" data-close="1">Annulla</button><button class="btn primary" id="applyEdit" data-id="${escapeHTML(id)}">Salva</button></div></div></div>`;$('#modalRoot').innerHTML=html;}
 function setImportMode(mode){if(!pendingImport)return;pendingImport.mode=mode;renderImportDialog();}
 function prepareImport(text){const rows=parseCSV(text);const oldMap=new Map(db.rows.map(r=>[r.id,r]));for(const r of rows){const old=oldMap.get(r.id);if(old&&old.sourceKey===r.sourceKey&&old.manual!==undefined)r.manual=old.manual;}pendingImport={rows,mode:'replace',fileDate:new Date().toISOString()};renderImportDialog();}
 function renderImportDialog(){if(!pendingImport)return;const lastScroll=$('#importOverlay .dialog-body')?.scrollTop||0;const rows=pendingImport.rows;const unresolved=rows.filter(r=>live(r).state==='review').sort((a,b)=>b.date.localeCompare(a.date));const transfers=rows.filter(r=>r.transfer).length;const investment=rows.filter(r=>norm(r.category).includes('investiment')||norm(r.labels).includes('investiment')).length;const incomes=rows.filter(r=>norm(r.type).includes('entrata')&&!r.transfer).length;
