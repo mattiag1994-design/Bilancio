@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#f7f9fc">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; worker-src 'self'; manifest-src 'self'; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Bilancio personale · Spese nette</title>
+<meta name="app-version" content="2026-10-15-asilo">
 <style>
 :root{--bg:#f5f7fb;--paper:#fff;--ink:#142137;--muted:#68778d;--line:#e5eaf1;--navy:#172847;--accent:#256a5e;--mint:#e6f5ef;--amber:#9b5a13;--amber-bg:#fff5e5;--red:#b33e44;--red-bg:#fff0f0;--shadow:0 4px 24px rgba(21,35,63,.045);--rad:18px}
 *{box-sizing:border-box}html{font-size:16px;-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}button,select,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #95cbbc;outline-offset:2px}a{color:var(--accent)}
@@ -51,7 +52,7 @@
 'use strict';
 const EMBEDDED_CSV_BASE64 = '';
 const KEY='bilancio-wallet-locale-v1'; // Keep previous data, even after app upgrades.
-const CATS=[{id:'Svago',color:'#61739d'},{id:'Bollette',color:'#548fba'},{id:'Carburante',color:'#b07c47'},{id:'Assicurazione e bollo auto',color:'#937cb8'},{id:'Abbonamenti',color:'#4e9b87'},{id:'Mutuo',color:'#c37379'},{id:'Spesa',color:'#8fae60'},{id:'Spese mediche',color:'#a47b94'}];
+const CATS=[{id:'Svago',color:'#61739d'},{id:'Bollette',color:'#548fba'},{id:'Carburante',color:'#b07c47'},{id:'Assicurazione e bollo auto',color:'#937cb8'},{id:'Abbonamenti',color:'#4e9b87'},{id:'Mutuo',color:'#c37379'},{id:'Spesa',color:'#8fae60'},{id:'Asilo',color:'#a37d59'},{id:'Spese mediche',color:'#a47b94'}];
 const EXCLUDED='__IGNORA__';
 const MONTHS=['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
 const money=n=>new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(n||0);
@@ -85,6 +86,8 @@ function classification(r){
  if(r.date==='2026-03-15'&&r.account==='storico'&&r.amount===100&&/\bcamilla\b/.test(note))return ignored('Investimento per Camilla (confermato)');
  if(/revolut\*\*|revolut\*|apple pay top-up|prelievo mastercard|^to eur\b|to eur mb:/.test(note))return ignored('Ricarica / giroconto Revolut');
  if(/revpoints spare change/.test(note))return counted('Svago'); // Confermato: €1,61 su tre operazioni.
+ // Retta asilo, nido, corsi di psicomotricità: categoria Asilo (confermati il 15/10/2026).
+ if(c==='asilo'||label==='asilo'||/\b(?:asilo|nido|psicomotricita)\b/.test(note))return counted('Asilo');
  // Reimbursements recorded in the secondary account are counted in the same category as expenses.
  // Fibra is always Abbonamenti, including the credits imported by Wallet as Bollette.
  if(/\bfibra\b|\binternet\b|\bwind tre\b/.test(note))return counted('Abbonamenti');
@@ -98,10 +101,11 @@ function classification(r){
  // 22 Aug 2026: undetailed Arnaldo refund, explicitly confirmed as Svago.
  if(income&&r.date==='2026-08-22'&&r.account==='Arnaldo'&&r.amount===36&&!String(r.note||'').trim())return counted('Svago');
  // Wallet food/grocery reimbursements remain in Spesa, including intentional spending money.
- if(c==='cibo e bevande'||label==='spesa')return counted('Spesa');
+ if(c==='cibo e bevande'||c==='spesa'||label==='spesa')return counted('Spesa');
  // DAZN has no Svago label on its positive reimbursement: pair it with the outgoing
  // Wallet item which DOES have the label Svago. Kindle remains in Wallet's Svago label.
  if(income&&/\bdazn\b/.test(note))return counted('Svago');
+ if(income&&/\b(?:vinted|mangopay)\b/.test(note))return ignored('Vendita Vinted / Mangopay, non rimborso spese');
  // Exclude unrelated income, while flagging unspecified refunds as needing a decision.
  if(income&&(c.includes('stipendio')||c==='vendita'))return ignored('Entrata non collegata alle spese');
  if(income&&(c.includes('rimborsi')||c==='reddito'))return review('Entrata: a quale categoria appartiene il rimborso?', 'Svago');
@@ -110,7 +114,9 @@ function classification(r){
  if(c.includes('carburante')){
   return counted('Carburante');
  }
+ if(c==='mutuo')return counted('Mutuo');
  if(c==='abitazione'||label.includes('mutuo'))return /mutuo|casa/i.test(note+' '+label)?counted('Mutuo'):review('Abitazione: non è chiaro se sia mutuo','Mutuo');
+ if(['luce','gas','pellet','acqua'].includes(c))return counted('Bollette');
  if(c==='bollette'||label==='bollette'){
   if(/addebito sepa dd|sdd da it/.test(note)&&!/gas|enel|luce|acqua|pellet|fibra|plenitude/i.test(note))return review('Bolletta senza fornitura riconoscibile', 'Bollette');
   return counted('Bollette');
@@ -121,7 +127,7 @@ function classification(r){
   return counted('Abbonamenti');
  }
  // Money intentionally sent for groceries counts as Spesa, as requested.
- if(c==='cibo e bevande'||label==='spesa')return counted('Spesa');
+ if(c==='cibo e bevande'||c==='spesa'||label==='spesa')return counted('Spesa');
  // Through 2026, medical bills join Svago; from 2027 they join Spese mediche.
  // Shopping, electronics, courses, union fees and personal payments join Svago.
  if(c==='vita e intrattenimento')return counted('Svago');
